@@ -1,6 +1,12 @@
 <?php
 
 /**
+ * modified by (https://github.com/likev)
+ *
+ * last edit date: 2023-4-21
+ */
+
+/**
  * AJAX Cross Domain (PHP) Proxy 0.8
  * Copyright (C) 2016 Iacovos Constantinou (https://github.com/softius)
  *
@@ -20,14 +26,14 @@
  * Enables or disables filtering for cross domain requests.
  * Recommended value: true
  */
-define('CSAJAX_FILTERS', true);
+define('CSAJAX_FILTERS', false);//true
 
 /**
  * If set to true, $valid_requests should hold only domains i.e. a.example.com, b.example.com, usethisdomain.com
  * If set to false, $valid_requests should hold the whole URL ( without the parameters ) i.e. http://example.com/this/is/long/url/
  * Recommended value: false (for security reasons - do not forget that anyone can access your proxy)
  */
-define('CSAJAX_FILTER_DOMAIN', false);
+define('CSAJAX_FILTER_DOMAIN', true);
 
 /**
  * Enables or disables Expect: 100-continue header. Some webservers don't 
@@ -39,14 +45,42 @@ define('CSAJAX_SUPPRESS_EXPECT', false);
 /**
  * Set debugging to true to receive additional messages - really helpful on development
  */
-define('CSAJAX_DEBUG', false);
+define('CSAJAX_DEBUG', true);//false
+
+
+/**
+ * 
+ */
+define('CSAJAX_CORS_HEADERS', true);
 
 /**
  * A set of valid cross domain requests
  */
 $valid_requests = array(
     // 'example.com'
+    'current.sinaapp.com',
+    'lyqx.sinaapp.com',
+    'pi.weather.com.cn',
+    'example.com'
 );
+
+//If the HTTPS is not found to be "on"
+if(!isset($_SERVER["HTTPS"]) || $_SERVER["HTTPS"] != "on")
+{
+    //Tell the browser to redirect to the HTTPS URL.
+    header("Location: https://" . $_SERVER["HTTP_HOST"] . $_SERVER["REQUEST_URI"], true, 301);//302
+    //Prevent the rest of the script from executing.
+    exit();
+}
+
+// check against valid requests
+if (CSAJAX_CORS_HEADERS) {
+
+    header("Access-Control-Allow-Origin: *");
+    header("Access-Control-Allow-Methods: POST,GET,OPTIONS");
+    header('Access-Control-Allow-Credentials: true');
+    header('Access-Control-Allow-Headers: Origin,Access-Control-Allow-Headers,Content-Type,Access-Control-Allow-Methods, Authorization, X-Requested-With,Access-Control-Allow-Credentials,Referer,User-Agent');
+}
 
 /**
  * Set extra multiple options for cURL
@@ -67,7 +101,7 @@ foreach ($_SERVER as $key => $value) {
     if (strpos($key, 'HTTP_') === 0  ||  strpos($key, 'CONTENT_') === 0) {
         $headername = str_replace('_', ' ', str_replace('HTTP_', '', $key));
         $headername = str_replace(' ', '-', ucwords(strtolower($headername)));
-        if (!in_array($headername, array( 'Host', 'X-Proxy-Url' ))) {
+        if (!in_array($headername, array( 'Host', 'X-Proxy-Url', 'Referer'))) {
             $request_headers[] = "$headername: $value";
         }
     }
@@ -75,7 +109,12 @@ foreach ($_SERVER as $key => $value) {
 
 // identify request method, url and params
 $request_method = $_SERVER['REQUEST_METHOD'];
-if ('GET' == $request_method) {
+
+if ('OPTIONS' == $request_method) {
+
+    exit("Allow CORS preflight");//CORS preflight
+
+} else if ('GET' == $request_method) {
     $request_params = $_GET;
 } elseif ('POST' == $request_method) {
     $request_params = $_POST;
@@ -116,26 +155,34 @@ if (preg_match('!' . $_SERVER['SCRIPT_NAME'] . '!', $request_url) || empty($requ
     exit;
 }
 
+
+$parsed = $p_request_url;
+
+//the whole URL ( without the parameters )
+$check_url = isset($parsed['scheme']) ? $parsed['scheme'] . '://' : '';
+$check_url .= isset($parsed['user']) ? $parsed['user'] . ($parsed['pass'] ? ':' . $parsed['pass'] : '') . '@' : '';
+$check_url .= isset($parsed['host']) ? $parsed['host'] : '';
+$check_url .= isset($parsed['port']) ? ':' . $parsed['port'] : '';
+$check_url .= isset($parsed['path']) ? $parsed['path'] : '';
+
 // check against valid requests
 if (CSAJAX_FILTERS) {
-    $parsed = $p_request_url;
+    
     if (CSAJAX_FILTER_DOMAIN) {
         if (!in_array($parsed['host'], $valid_requests)) {
             csajax_debug_message('Invalid domain - ' . $parsed['host'] . ' does not included in valid requests');
             exit;
         }
     } else {
-        $check_url = isset($parsed['scheme']) ? $parsed['scheme'] . '://' : '';
-        $check_url .= isset($parsed['user']) ? $parsed['user'] . ($parsed['pass'] ? ':' . $parsed['pass'] : '') . '@' : '';
-        $check_url .= isset($parsed['host']) ? $parsed['host'] : '';
-        $check_url .= isset($parsed['port']) ? ':' . $parsed['port'] : '';
-        $check_url .= isset($parsed['path']) ? $parsed['path'] : '';
+        
         if (!in_array($check_url, $valid_requests)) {
             csajax_debug_message('Invalid domain - ' . $request_url . ' does not included in valid requests');
             exit;
         }
     }
 }
+
+$request_headers[] = 'Referer: ' . $check_url;
 
 // append query string for GET requests
 if ($request_method == 'GET' && count($request_params) > 0 && (!array_key_exists('query', $p_request_url) || empty($p_request_url['query']))) {
@@ -161,6 +208,10 @@ if ('POST' == $request_method) {
 } elseif ('PUT' == $request_method || 'DELETE' == $request_method) {
     curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $request_method);
     curl_setopt($ch, CURLOPT_POSTFIELDS, $request_params);
+} elseif ('HEAD' == $request_method) {//{//
+    //true to exclude the body from the output. Request method is then set to HEAD. Changing this to false does not change it to GET. 
+    //https://www.php.net/manual/en/function.curl-setopt.php
+    curl_setopt($ch, CURLOPT_NOBODY, true);
 }
 
 // Set multiple options for curl according to configuration
@@ -175,19 +226,32 @@ curl_close($ch);
 // split response to header and content
 list($response_headers, $response_content) = preg_split('/(\r\n){2}/', $response, 2);
 
+/*
+print("-----response_headers-----");
+csajax_debug_message( $response_headers );
+print("-----response_body-----");
+*/
+
 // (re-)send the headers
 $response_headers = preg_split('/(\r\n){1}/', $response_headers);
 foreach ($response_headers as $key => $response_header) {
-    //nowdays some headers are lowercase
+    //headers to lowercase
     $response_header = strtolower($response_header);
-    
+
     // Rewrite the `Location` header, so clients will also use the proxy for redirects.
     if (preg_match('/^location:/', $response_header)) {
         list($header, $value) = preg_split('/: /', $response_header, 2);
-        $response_header = 'Location: ' . $_SERVER['REQUEST_URI'] . '?csurl=' . $value;
+        // csajax_debug_message(parse_url($_SERVER['REQUEST_URI']) );
+        $server_path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+        $response_header = 'Location: ' . $server_path . '?csurl=' . $value;
     }
-    
-    //skip transfer-encoding and strict-transport-security headers
+	
+	// we have already set access-control-allow- header
+	if (strpos($response_header, 'access-control-allow') === 0){
+		continue;
+	}
+
+    //skip transfer-encoding and strict-transport-security header
     if (!preg_match('/^(transfer-encoding|strict-transport-security):/', $response_header)) {
         header($response_header, false);
     }
@@ -199,6 +263,7 @@ print($response_content);
 function csajax_debug_message($message)
 {
     if (true == CSAJAX_DEBUG) {
-        print $message . PHP_EOL;
+        print_r($message);
+        sleep(5);
     }
 }
